@@ -165,9 +165,47 @@ exports.reassignLead = async (req, res, next) => {
 
         if (!user) return res.status(404).json({ success: false, message: 'Counselor not found' });
 
-        await prisma.lead.update({
+        const currentLead = await prisma.lead.findUnique({
             where: { id: leadId },
-            data: { assignedTo: user.id }
+            select: { assignedTo: true, name: true }
+        });
+
+        if (!currentLead) return res.status(404).json({ success: false, message: 'Lead not found' });
+        const previousOwnerId = currentLead.assignedTo;
+
+        await prisma.$transaction(async (tx) => {
+            await tx.lead.update({
+                where: { id: leadId },
+                data: { assignedTo: user.id }
+            });
+
+            await tx.leadAssignmentHistory.create({
+                data: {
+                    leadId,
+                    assignedById: req.user?.id || null,
+                    assignedToId: user.id,
+                    previousOwnerId
+                }
+            });
+
+            await tx.message.create({
+                data: {
+                    leadId,
+                    message: `System: Lead reassigned to Counselor ${user.name}.`,
+                    sender: 'System',
+                    channel: 'System'
+                }
+            });
+
+            await tx.activityLog.create({
+                data: {
+                    userId: req.user?.id || null,
+                    action: 'LEAD_REASSIGNED',
+                    module: 'leads',
+                    details: `Lead "${currentLead.name}" (ID: ${leadId}) reassigned to Counselor "${user.name}" (ID: ${user.id}) by Team Leader "${req.user?.name}"`,
+                    status: 'Success'
+                }
+            });
         });
 
         res.json({ success: true, message: `Reassigned to ${user.name}` });

@@ -1,184 +1,135 @@
-const prisma = require('../../config/prisma');
+const db = require('../../config/db');
+const axios = require('axios');
+const socketManager = require('../../sockets/socketManager');
 
-/**
- * AI Lead Scoring System
- *
- * Scores leads as:
- * - HOT (70-100): High engagement, complete profile, premium program
- * - WARM (40-69): Medium engagement
- * - COLD (0-39): Low engagement, incomplete profile
- *
- * Also provides: Auto-tagging based on profile signals
- */
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
-const WEIGHTS = {
-    hasEmail: 10,
-    hasPhone: 15,
-    hasCountry: 5,
-    hasProgram: 15,
-    priorityHigh: 20,
-    priorityMedium: 10,
-    stageAdvanced: 20,   // Qualified/In Progress stages
-    followUpSet: 10,
-    hasNotes: 5          // Engagement signal
-};
+// Memory storage for simple session handling (In production, use Redis or DB)
+const chatSessions = {};
 
-/**
- * Calculate AI Score for a lead - PRODUCTION GRADE DETERMINISTIC LOGIC
- */
-const calculateLeadScore = (lead) => {
-    let score = 0;
-    const tags = [];
+const SYSTEM_PROMPT = `You are an education counselor assistant for a student counseling website.
+Your goal is to collect the following details from the user sequentially, ONE AT A TIME:
+1. Name
+2. Phone Number
+3. Email Address
+4. Interested Country
+5. Highest Qualification
+6. IELTS Score (if any, otherwise 'None')
 
-    // 1. Data Completeness
-    if (lead.email) { score += WEIGHTS.hasEmail; tags.push('Verified Email'); }
-    if (lead.phone) { score += WEIGHTS.hasPhone; tags.push('Mobile Linked'); }
-    if (lead.country) { score += WEIGHTS.hasCountry; }
-    if (lead.program && lead.program !== 'General') { score += WEIGHTS.hasProgram; tags.push(`Target: ${lead.program}`); }
-    
-    // 2. Intent Signals
-    if (lead.priority === 'High') { score += WEIGHTS.priorityHigh; tags.push('Urgent Intent'); }
-    else if (lead.priority === 'Medium') { score += WEIGHTS.priorityMedium; }
-    
-    if (['Qualified', 'In Progress', 'Enrolled'].includes(lead.stage)) {
-        score += WEIGHTS.stageAdvanced;
-        tags.push('Active Pipeline');
-    }
-    
-    // 3. Engagement Signals
-    if (lead.followUpDate) { score += WEIGHTS.followUpSet; tags.push('Nurture Scheduled'); }
-    if (lead.counselorNotes && lead.counselorNotes.length > 0) { score += WEIGHTS.hasNotes; tags.push('Counselor Engaged'); }
+DO NOT ask for multiple details at once. Be conversational, friendly, and concise.
+Once you have ALL the details, your final message must include the exact text: "[LEAD_COMPLETE]" followed by a summary of the details in JSON format like this:
+{"name": "...", "phone": "...", "email": "...", "country": "...", "qualification": "...", "ielts": "..."}
+If the user asks questions outside of this, politely guide them back to providing their details.`;
 
-    // Normalize to 100
-    const finalScore = Math.min(score, 100);
-
-    // Classification (Deterministic)
-    let classification = 'COLD';
-    if (finalScore >= 80) classification = 'HOT';
-    else if (finalScore >= 40) classification = 'WARM';
-
-    return { score: finalScore, classification, tags };
-};
-
-/**
- * Score a single lead (Controller)
- */
-exports.scoreLead = async (req, res, next) => {
+exports.handleWebsiteChat = async (req, res, next) => {
     try {
-        const leadId = parseInt(req.params.id);
+        const { sessionId, message } = req.body;
 
-        const lead = await prisma.lead.findUnique({ where: { id: leadId } });
-        if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
-
-        const { score, classification, tags } = calculateLeadScore(lead);
-
-        // Update lead score in DB
-        await prisma.lead.update({
-            where: { id: leadId },
-            data: { score }
-        });
-
-        res.json({
-            success: true,
-            message: 'AI Lead Score calculated',
-            data: {
-                leadId,
-                leadName: lead.name,
-                score,
-                classification,
-                tags,
-                recommendation: getRecommendation(classification)
-            }
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-/**
- * Score ALL leads in bulk
- */
-exports.scoreAllLeads = async (req, res, next) => {
-    try {
-        const leads = await prisma.lead.findMany();
-        const results = [];
-
-        for (const lead of leads) {
-            const { score, classification, tags } = calculateLeadScore(lead);
-            await prisma.lead.update({ where: { id: lead.id }, data: { score } });
-            results.push({ leadId: lead.id, name: lead.name, score, classification });
+        if (!sessionId || !message) {
+            return res.status(400).json({ success: false, message: 'Session ID and message are required' });
         }
 
-        const hot = results.filter(r => r.classification === 'HOT').length;
-        const warm = results.filter(r => r.classification === 'WARM').length;
-        const cold = results.filter(r => r.classification === 'COLD').length;
+        // Initialize session if not exists
+        if (!chatSessions[sessionId]) {
+            chatSessions[sessionId] = [
+                { role: 'system', content: SYSTEM_PROMPT }
+            ];
+        }
 
-        res.json({
-            success: true,
-            message: `AI Scoring complete for ${results.length} leads`,
-            data: {
-                summary: { hot, warm, cold, total: results.length },
-                results
+        // Add user message to history
+        chatSessions[sessionId].push({ role: 'user', content: message });
+
+        // Call OpenAI API
+        const response = await axios.post(
+            'https://api.openai.com/v1/chat/completions',
+            {
+                model: 'gpt-3.5-turbo',
+                messages: chatSessions[sessionId]
+            },
+            {
+                headers: { Authorization: `Bearer ${OPENAI_KEY}` }
             }
-        });
+        );
+
+        const aiReply = response.data.choices[0].message.content;
+
+        // Check if lead collection is complete
+        if (aiReply.includes('[LEAD_COMPLETE]')) {
+            try {
+                // Extract JSON from reply
+                const jsonStrMatch = aiReply.match(/\\{.*\\}/s);
+                if (jsonStrMatch) {
+                    const leadData = JSON.parse(jsonStrMatch[0]);
+
+                    // Insert Lead into DB
+                    const [result] = await db.execute(
+                        `INSERT INTO leads (name, phone, email, country, source, stage, qualification, ielts_score) 
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [
+                            leadData.name || 'Unknown', 
+                            leadData.phone || 'Unknown', 
+                            leadData.email || null, 
+                            leadData.country || null, 
+                            'AI_CHAT', 
+                            'New', 
+                            leadData.qualification || null, 
+                            leadData.ielts || null
+                        ]
+                    );
+
+                    const leadId = result.insertId;
+
+                    // Create open conversation for Shared Inbox
+                    const [convResult] = await db.execute(
+                        'INSERT INTO conversations (lead_id, source, status, unread_count, last_message, last_message_time) VALUES (?, ?, ?, ?, ?, NOW())',
+                        [leadId, 'WEBSITE', 'Open', 1, 'New AI Lead Generated']
+                    );
+                    
+                    const conversationId = convResult.insertId;
+
+                    // Save the chat history as messages
+                    for (const msg of chatSessions[sessionId]) {
+                        if (msg.role !== 'system') {
+                            const senderType = msg.role === 'user' ? 'Customer' : 'Bot';
+                            const senderName = msg.role === 'user' ? (leadData.name || 'Website Visitor') : 'AI Assistant';
+                            let textToSave = msg.content;
+                            if (textToSave.includes('[LEAD_COMPLETE]')) {
+                                textToSave = "Lead details successfully collected and forwarded to a counselor.";
+                            }
+
+                            await db.execute(
+                                'INSERT INTO messages (conversation_id, message, message_type, sender_type, sender_name) VALUES (?, ?, ?, ?, ?)',
+                                [conversationId, textToSave, 'text', senderType, senderName]
+                            );
+                        }
+                    }
+
+                    await db.execute(
+                        'INSERT INTO activity_logs (user_id, lead_id, action, details) VALUES (?, ?, ?, ?)',
+                        [null, leadId, 'Lead Created', 'Lead generated via Website AI Chat']
+                    );
+
+                    socketManager.events.inboxUpdate({ conversationId, leadId, message: 'New AI Lead Generated', sender: 'System' });
+
+                    // Clear session
+                    delete chatSessions[sessionId];
+
+                    return res.json({ 
+                        success: true, 
+                        reply: "Thank you! I have forwarded your details to our expert counselors. They will reach out to you shortly." 
+                    });
+                }
+            } catch (err) {
+                console.error("Failed to parse AI JSON or insert lead:", err);
+            }
+        }
+
+        // Add AI reply to history
+        chatSessions[sessionId].push({ role: 'assistant', content: aiReply });
+
+        res.json({ success: true, reply: aiReply });
     } catch (error) {
+        console.error('AI Chat Error:', error.response ? error.response.data : error.message);
         next(error);
     }
-};
-
-/**
- * Get Smart Reply Suggestions based on lead stage
- */
-exports.getSmartReplies = async (req, res, next) => {
-    try {
-        const leadId = parseInt(req.params.id);
-        const lead = await prisma.lead.findUnique({ where: { id: leadId } });
-
-        if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
-
-        const suggestions = getSmartReplySuggestions(lead.stage, lead.name);
-
-        res.json({
-            success: true,
-            data: { leadId, stage: lead.stage, suggestions }
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// ─── Helpers ──────────────────────────────────────
-
-const getRecommendation = (classification) => {
-    if (classification === 'HOT') return 'Contact immediately. High conversion potential.';
-    if (classification === 'WARM') return 'Follow up within 24 hours. Nurture with relevant content.';
-    return 'Add to drip campaign. Build engagement before direct outreach.';
-};
-
-const getSmartReplySuggestions = (stage, name) => {
-    const n = name || 'there';
-    const templates = {
-        'New': [
-            `Hi ${n}! Thanks for reaching out. How can I help you today?`,
-            `Hello ${n}! I'm excited to assist you. Could you share more about what you're looking for?`,
-            `Welcome ${n}! Let me know how I can support you.`
-        ],
-        'Assigned': [
-            `Hi ${n}, I've been assigned to your case. Let's connect!`,
-            `Hello ${n}! I'll be your dedicated counselor. When's a good time to talk?`
-        ],
-        'Follow Up': [
-            `Hi ${n}, just following up on our previous conversation. Any questions?`,
-            `Hello ${n}! Hope you had time to think things over. Ready to move forward?`
-        ],
-        'Qualified': [
-            `Great news ${n}! You qualify for our program. Let's discuss the next steps.`,
-            `${n}, based on our discussion, I think this is a perfect fit for you!`
-        ],
-        'Default': [
-            `Hi ${n}, how can I assist you today?`,
-            `Hello ${n}! Feel free to ask me anything.`
-        ]
-    };
-    return templates[stage] || templates['Default'];
 };

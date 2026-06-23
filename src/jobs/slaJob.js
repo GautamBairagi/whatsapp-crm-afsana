@@ -55,6 +55,96 @@ const initSlaJob = () => {
             console.error('[SLA Job CRITICAL ERROR]:', error.message);
         }
     });
+
+    // Follow-up Monitor Job (Checks every hour)
+    cron.schedule('0 * * * *', async () => {
+        console.log('[FollowUp Job] Checking for pending and missed follow-ups...');
+        try {
+            const currentTime = new Date();
+
+            // 1. Missed Follow-up Detection
+            const missedFollowups = await prisma.leadFollowup.findMany({
+                where: {
+                    status: 'Pending',
+                    scheduledTime: { lt: currentTime }
+                },
+                include: { lead: { select: { name: true } } }
+            });
+
+            if (missedFollowups.length > 0) {
+                console.log(`[FollowUp Job] Detected ${missedFollowups.length} missed follow-ups.`);
+                for (const followup of missedFollowups) {
+                    await prisma.leadFollowup.update({
+                        where: { id: followup.id },
+                        data: { status: 'Missed' }
+                    });
+
+                    await prisma.notification.create({
+                        data: {
+                            userId: followup.counselorId,
+                            message: `⚠️ URGENT: You missed a scheduled follow-up for lead "${followup.lead.name}".`,
+                            status: 'Unread'
+                        }
+                    });
+
+                    await prisma.activityLog.create({
+                        data: {
+                            userId: followup.counselorId,
+                            action: 'FOLLOWUP_MISSED',
+                            module: 'followup',
+                            details: `Auto-detected missed follow-up for lead "${followup.lead.name}" (Lead ID: ${followup.leadId})`,
+                            status: 'Failed'
+                        }
+                    }).catch(() => {});
+                }
+            }
+
+            // 2. Pending Follow-up Reminders (Due today)
+            const now = new Date();
+            const startOfDay = new Date(now.setHours(0, 0, 0, 0));
+            now.setHours(23, 59, 59, 999);
+            const endOfDay = now;
+
+            const dueFollowups = await prisma.leadFollowup.findMany({
+                where: {
+                    status: 'Pending',
+                    scheduledTime: {
+                        gte: startOfDay,
+                        lte: endOfDay
+                    }
+                },
+                include: { lead: { select: { name: true } } }
+            });
+
+            if (dueFollowups.length > 0) {
+                console.log(`[FollowUp Job] Dispatching notifications for ${dueFollowups.length} pending follow-ups.`);
+                
+                for (const followup of dueFollowups) {
+                    const message = `Follow-up reminder for lead "${followup.lead.name}" is scheduled for today.`;
+                    
+                    const existingNotif = await prisma.notification.findFirst({
+                        where: {
+                            userId: followup.counselorId,
+                            message,
+                            createdAt: { gte: startOfDay }
+                        }
+                    });
+
+                    if (!existingNotif) {
+                        await prisma.notification.create({
+                            data: {
+                                userId: followup.counselorId,
+                                message,
+                                status: 'Unread'
+                            }
+                        });
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('[FollowUp Job CRITICAL ERROR]:', error.message);
+        }
+    });
 };
 
 module.exports = { initSlaJob };

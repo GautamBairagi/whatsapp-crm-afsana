@@ -44,7 +44,10 @@ const events = {
     leadNew: (lead) => emit('lead:new', { type: 'lead:new', timestamp: new Date(), data: lead }),
     leadUpdate: (lead) => emit('lead:update', { type: 'lead:update', timestamp: new Date(), data: lead }),
     leadDelete: (id) => emit('lead:delete', { type: 'lead:delete', timestamp: new Date(), data: { id } }),
-    messageNew: (message) => emit('message:new', { type: 'message:new', timestamp: new Date(), data: message }),
+    messageNew: (message) => {
+        emit('message:new', { type: 'message:new', timestamp: new Date(), data: message });
+        emit('new_message', message);
+    },
     dashboardRefresh: (stats) => emit('dashboard:refresh', { type: 'dashboard:refresh', timestamp: new Date(), data: stats }),
     notification: (notification) => emit('notification:new', { type: 'notification:new', timestamp: new Date(), data: notification }),
     channelUpdate: (channel) => emit('channel:update', { type: 'channel:update', timestamp: new Date(), data: channel }),

@@ -6,17 +6,7 @@ const errorMiddleware = (err, req, res, next) => {
     let statusCode = err.statusCode || 500;
     let message = err.message || 'Internal Server Error';
 
-    // Prisma Specific Error Handling
-    if (err.code === 'P2002') {
-        statusCode = 400;
-        message = `Unique constraint failed on field: ${err.meta?.target || 'unknown'}`;
-    } else if (err.code === 'P2003') {
-        statusCode = 400;
-        message = 'Foreign key constraint failed. Related record not found.';
-    } else if (err.code === 'P2025') {
-        statusCode = 404;
-        message = 'Record to update/delete not found.';
-    }
+    // Removed Prisma Error Handling
 
     res.status(statusCode).json({
         success: false,

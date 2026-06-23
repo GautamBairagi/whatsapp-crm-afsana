@@ -77,6 +77,10 @@ app.use('/api/users', userRoutes);
 const leadRoutes = require('./modules/leads/lead.routes');
 app.use('/api/leads', leadRoutes);
 
+// AI Routes (Website Chat)
+const aiRoutes = require('./modules/leads/ai.routes');
+app.use('/api/ai', aiRoutes);
+
 // Dashboard Routes
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 app.use('/api/dashboard', dashboardRoutes);
@@ -85,72 +89,13 @@ app.use('/api/dashboard', dashboardRoutes);
 const messageRoutes = require('./modules/messages/message.routes');
 app.use('/api/messages', messageRoutes);
 
-// Customer Routes
-const customerRoutes = require('./modules/customers/customer.routes');
-app.use('/api/customers', customerRoutes);
-
-// Billing Routes
-const billingRoutes = require('./modules/billing/billing.routes');
-app.use('/api/billing', billingRoutes);
-
-// System Routes
-const channelRoutes = require('./modules/system/channel.routes');
-app.use('/api/channels', channelRoutes);
-app.use('/api/channel', channelRoutes);
-
-const analyticsRoutes = require('./modules/system/analytics.routes');
-app.use('/api/analytics', analyticsRoutes);
-
-// Counselor/Support Routes
-const counselorRoutes = require('./modules/users/counselor.routes');
-app.use('/api/counselor', counselorRoutes);
-
-const supportRoutes = require('./modules/users/support.routes');
-app.use('/api/support', supportRoutes);
-
-const callRoutes = require('./modules/system/call.routes');
-app.use('/api/calls', callRoutes);
-
-const notificationRoutes = require('./modules/system/notification.routes');
-app.use('/api/notifications', notificationRoutes);
-
-const menuRoutes = require('./modules/system/menu.routes');
-app.use('/api/system/menus', menuRoutes);
-
 // WhatsApp Routes
 const whatsappRoutes = require('./modules/whatsapp/whatsapp.routes');
 app.use('/api/whatsapp', whatsappRoutes);
 
-// Admin/Management Routes
-const auditRoutes = require('./modules/admin/audit.routes');
-app.use('/api/audit', auditRoutes);
-
-const templateRoutes = require('./modules/messages/template.routes');
-app.use('/api/templates', templateRoutes);
-
-const routingRoutes = require('./modules/leads/routing.routes');
-app.use('/api/routing', routingRoutes);
-
-const aiRoutes = require('./modules/leads/ai.routes');
-app.use('/api/ai', aiRoutes);
-
-const adminRoutes = require('./modules/admin/admin.routes');
-app.use('/api/admin', adminRoutes);
-
-const careTemplateRoutes = require('./modules/templates/template.routes');
-app.use('/api/care-templates', careTemplateRoutes);
-
-const rotaRoutes = require('./modules/rota/rota.routes');
-app.use('/api/rota', rotaRoutes);
-
-const superAdminRoutes = require('./modules/admin/superadmin.routes');
-app.use('/api/super-admin', superAdminRoutes);
-
-const managerRoutes = require('./modules/admin/manager.routes');
-app.use('/api/manager', managerRoutes);
-
-const teamLeaderRoutes = require('./modules/admin/teamleader.routes');
-app.use('/api/team-leader', teamLeaderRoutes);
+// Report Routes
+const reportRoutes = require('./modules/reports/report.routes');
+app.use('/api/reports', reportRoutes);
 
 // Global Error Handler
 app.use(errorMiddleware);

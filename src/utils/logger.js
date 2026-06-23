@@ -1,5 +1,4 @@
-const prisma = require('../config/prisma');
-
+const db = require('../config/db');
 /**
  * Production Logger & Alert System
  */
@@ -16,15 +15,10 @@ const logger = {
         console.error(`[CRITICAL ERROR] ${message}:`, error);
         
         try {
-            // Log to Database for visibility in Audit Logs
-            await prisma.activityLog.create({
-                data: {
-                    action: 'SYSTEM_CRITICAL_ERROR',
-                    module: 'system',
-                    details: `${message} | Error: ${error.message} | Stack: ${error.stack?.substring(0, 500)}`,
-                    status: 'Failed'
-                }
-            });
+            await db.execute(
+                'INSERT INTO activity_logs (action, details) VALUES (?, ?)',
+                ['SYSTEM_CRITICAL_ERROR', `${message} | Error: ${error.message}`]
+            );
 
             // MOCK: Send Alert Webhook (e.g. to Slack/Discord/Email)
             if (process.env.ALERT_WEBHOOK_URL) {

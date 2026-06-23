@@ -1,22 +1,12 @@
-const prisma = require('../../config/prisma');
+const db = require('../../config/db');
 const bcrypt = require('bcryptjs');
-const { exportAll } = require('../../../scripts/export_db');
 
 // @desc    Get all users
 // @route   GET /api/users
 exports.getUsers = async (req, res, next) => {
     try {
-        const users = await prisma.user.findMany({
-            include: { role: true },
-            orderBy: { createdAt: 'desc' }
-        });
-
-        const data = users.map(user => ({
-            ...user,
-            role: user.role?.name || 'N/A'
-        }));
-
-        res.json({ success: true, message: 'Users retrieved successfully', data });
+        const [users] = await db.execute('SELECT id, name, email, role, status, created_at FROM users ORDER BY created_at DESC');
+        res.json({ success: true, message: 'Users retrieved successfully', data: users });
     } catch (error) {
         next(error);
     }
@@ -26,66 +16,37 @@ exports.getUsers = async (req, res, next) => {
 // @route   PUT /api/users/:id
 exports.updateUser = async (req, res, next) => {
     try {
-        const { name, email, role, country, team, password, status, assignedChannels } = req.body;
+        const { name, email, role, password, status } = req.body;
         const userId = parseInt(req.params.id);
 
-        let updateData = {};
-        if (name) updateData.name = name;
-        if (email) updateData.email = email;
-        if (country) updateData.country = country;
-        if (team) updateData.team = team;
+        let updateFields = [];
+        let queryParams = [];
+
+        if (name) { updateFields.push('name = ?'); queryParams.push(name); }
+        if (email) { updateFields.push('email = ?'); queryParams.push(email); }
+        if (role) { updateFields.push('role = ?'); queryParams.push(role); }
+        if (status) { updateFields.push('status = ?'); queryParams.push(status); }
 
         if (password) {
-            updateData.password = await bcrypt.hash(password, 10);
+            const hashedPassword = await bcrypt.hash(password, 10);
+            updateFields.push('password = ?');
+            queryParams.push(hashedPassword);
         }
 
-        if (role) {
-            const roleMap = {
-                'Manager': 'MANAGER',
-                'Team Leader': 'TEAM_LEADER',
-                'Counselor': 'COUNSELOR',
-                'Customer Support': 'SUPPORT'
-            };
-            const dbRoleName = roleMap[role] || role;
-            const roleRecord = await prisma.role.findUnique({ where: { name: dbRoleName } });
-            if (roleRecord) {
-                updateData.roleId = roleRecord.id;
-            }
-        }
-
-        if (assignedChannels !== undefined) updateData.assignedChannels = parseInt(assignedChannels);
-
-        if (status) {
-            if (status === 'TOGGLE') {
-                const currentUser = await prisma.user.findUnique({
-                    where: { id: userId },
-                    select: { status: true }
-                });
-                updateData.status = currentUser.status === 'Active' ? 'Inactive' : 'Active';
-            } else {
-                updateData.status = status;
-            }
-        }
-
-        if (Object.keys(updateData).length === 0) {
+        if (updateFields.length === 0) {
             return res.status(400).json({ success: false, message: 'No fields to update' });
         }
 
-        const updatedUser = await prisma.user.update({
-            where: { id: userId },
-            data: updateData,
-            include: { role: true }
-        });
+        queryParams.push(userId);
+        
+        await db.execute(`UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`, queryParams);
 
-        const data = {
-            ...updatedUser,
-            role: updatedUser.role?.name || 'N/A'
-        };
+        const [updatedUsers] = await db.execute('SELECT id, name, email, role, status FROM users WHERE id = ?', [userId]);
 
         res.json({
             success: true,
             message: 'User updated successfully',
-            data
+            data: updatedUsers[0]
         });
     } catch (error) {
         next(error);
@@ -98,33 +59,19 @@ exports.toggleUserStatus = async (req, res, next) => {
     try {
         const userId = parseInt(req.params.id);
 
-        const currentUser = await prisma.user.findUnique({
-            where: { id: userId },
-            select: { status: true }
-        });
+        const [users] = await db.execute('SELECT status FROM users WHERE id = ?', [userId]);
+        if (users.length === 0) return res.status(404).json({ success: false, message: 'User not found' });
 
-        if (!currentUser) {
-            return res.status(404).json({ success: false, message: 'User not found' });
-        }
+        const newStatus = users[0].status === 'Active' ? 'Inactive' : 'Active';
 
-        const newStatus = currentUser.status === 'Active' ? 'Inactive' : 'Active';
+        await db.execute('UPDATE users SET status = ? WHERE id = ?', [newStatus, userId]);
 
-        const updatedUser = await prisma.user.update({
-            where: { id: userId },
-            data: { status: newStatus },
-            select: {
-                id: true,
-                name: true,
-                email: true,
-                role: true,
-                status: true
-            }
-        });
+        const [updatedUsers] = await db.execute('SELECT id, name, email, role, status FROM users WHERE id = ?', [userId]);
 
         res.json({
             success: true,
             message: `User status changed to ${newStatus}`,
-            data: updatedUser
+            data: updatedUsers[0]
         });
     } catch (error) {
         next(error);
@@ -136,18 +83,11 @@ exports.toggleUserStatus = async (req, res, next) => {
 exports.deleteUser = async (req, res, next) => {
     try {
         const userId = parseInt(req.params.id);
+        const [result] = await db.execute('DELETE FROM users WHERE id = ?', [userId]);
 
-        const currentUser = await prisma.user.findUnique({
-            where: { id: userId }
-        });
-
-        if (!currentUser) {
+        if (result.affectedRows === 0) {
             return res.status(404).json({ success: false, message: 'User not found' });
         }
-
-        await prisma.user.delete({
-            where: { id: userId }
-        });
 
         res.json({ success: true, message: 'User deleted successfully', data: null });
     } catch (error) {

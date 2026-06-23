@@ -1,20 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const {
-    getLeads, createLead, updateLead, deleteLead,
-    exportLeads, assignLead, autoAssignLeads
-} = require('./lead.controller');
-const { verifyToken, roleGuard, scopeLeads } = require('../../middleware/auth.middleware');
-const { checkLeadQuota } = require('../../middleware/quota.middleware');
-const { auditLog } = require('../../middleware/audit.middleware');
+const { getLeads, getLead, createLead, updateLead, deleteLead } = require('./lead.controller');
+const { verifyToken, roleGuard } = require('../../middleware/auth.middleware');
+const { logActivity } = require('../../middleware/activity.middleware');
 
-// All routes require authentication + role scope
-router.get('/', verifyToken, scopeLeads, getLeads);
-router.post('/', verifyToken, roleGuard('ADMIN', 'SUPER_ADMIN', 'TEAM_LEADER', 'MANAGER'), checkLeadQuota, auditLog('CREATE_LEAD', 'leads'), createLead);
-router.post('/export', verifyToken, scopeLeads, exportLeads);
-router.post('/auto-assign', verifyToken, roleGuard('ADMIN', 'SUPER_ADMIN', 'TEAM_LEADER'), autoAssignLeads);
-router.put('/:id', verifyToken, scopeLeads, updateLead);
-router.put('/:id/assign', verifyToken, roleGuard('TEAM_LEADER', 'MANAGER', 'ADMIN', 'SUPER_ADMIN'), assignLead);
-router.delete('/:id', verifyToken, roleGuard('SUPER_ADMIN', 'ADMIN'), deleteLead);
+router.post('/public', createLead);
+
+router.use(verifyToken);
+
+router.get('/', getLeads);
+router.get('/:id', getLead);
+router.post('/', roleGuard('SUPER_ADMIN', 'ADMIN', 'MANAGER', 'CUSTOMER_SUPPORT'), logActivity('Created Lead'), createLead);
+router.put('/:id', logActivity('Updated Lead'), updateLead);
+router.delete('/:id', roleGuard('SUPER_ADMIN'), logActivity('Deleted Lead'), deleteLead);
 
 module.exports = router;

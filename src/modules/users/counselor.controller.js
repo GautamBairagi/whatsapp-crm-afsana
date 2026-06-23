@@ -68,12 +68,15 @@ exports.getAllNotes = async (req, res, next) => {
     try {
         const { country, status } = req.query;
 
-        const where = {};
+        const where = {
+            lead: { assignedTo: req.user.id }
+        };
+        
         if (country && country !== 'Global') {
-            where.lead = { ...where.lead, country };
+            where.lead.country = country;
         }
         if (status && status !== 'All Stages') {
-            where.lead = { ...where.lead, stage: status };
+            where.lead.stage = status;
         }
 
         const notes = await prisma.counselorNote.findMany({
@@ -125,13 +128,47 @@ exports.getNotes = async (req, res, next) => {
     }
 };
 
-// @desc    Update lead stage (from counselor context)
-// @route   PUT /api/counselor/stage
 exports.updateStage = async (req, res, next) => {
     try {
-        const { leadId, stage } = req.body;
+        const { leadId, stage, managerOverride } = req.body;
+        const targetLeadId = parseInt(leadId);
+        const role = req.user?.roleName || req.user?.role?.name || '';
+
+        // Interaction-Based Conversion Validation
+        if (stage && ['Converted', 'Lost'].includes(stage)) {
+            const disableValidation = process.env.DISABLE_LEAD_CONVERSION_VALIDATION === 'true';
+            if (!disableValidation) {
+                const isManagerOrAdmin = ['ADMIN', 'SUPER_ADMIN', 'MANAGER'].includes(role);
+                const hasOverride = managerOverride === true && isManagerOrAdmin;
+
+                if (!hasOverride) {
+                    const [messageCount, callCount, followupCount] = await Promise.all([
+                        prisma.message.count({
+                            where: { leadId: targetLeadId, sender: { notIn: ['lead', 'System'] } }
+                        }),
+                        prisma.call.count({
+                            where: { 
+                                leadId: targetLeadId, 
+                                outcome: { in: ['Interested', 'Qualified', 'Follow-up', 'Not Interested'] } 
+                            }
+                        }),
+                        prisma.leadFollowup.count({
+                            where: { leadId: targetLeadId, status: 'Completed' }
+                        })
+                    ]);
+
+                    if (messageCount === 0 && callCount === 0 && followupCount === 0) {
+                        return res.status(403).json({
+                            success: false,
+                            message: 'Lead cannot be converted or marked lost without proper interaction history (at least one outgoing message, connected call, or completed follow-up), or manager override.'
+                        });
+                    }
+                }
+            }
+        }
+
         const updatedLead = await prisma.lead.update({
-            where: { id: parseInt(leadId) },
+            where: { id: targetLeadId },
             data: { stage }
         });
 
@@ -156,31 +193,72 @@ exports.updateStage = async (req, res, next) => {
     }
 };
 
-// @desc    Get counselor dashboard stats
-// @route   GET /api/counselor/dashboard
 exports.getDashboard = async (req, res, next) => {
     try {
         const userId = req.user.id;
+        
+        const now = new Date();
+        const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+        const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-        const [assignedLeads, hotLeads, followUps] = await Promise.all([
-            prisma.lead.count({ where: { assignedTo: userId } }),
-            prisma.lead.count({
-                where: {
-                    assignedTo: userId,
-                    stage: { in: ['Qualified', 'Pending'] }
-                }
+        const [
+            assignedLeads, 
+            hotLeads, 
+            actionPendings, 
+            convertedThisMonth,
+            todaysFollowups,
+            overdueFollowupsList
+        ] = await Promise.all([
+            prisma.lead.count({ 
+                where: { assignedTo: userId, stage: { notIn: ['Converted', 'Lost'] } } 
             }),
             prisma.lead.count({
                 where: {
                     assignedTo: userId,
-                    stage: 'Contacted' // Standard stage for follow-up actions
+                    stage: { in: ['Qualified', 'Contacted', 'Pending'] }
                 }
+            }),
+            prisma.leadFollowup.count({
+                where: { counselorId: userId, status: 'Pending' }
+            }),
+            prisma.lead.count({
+                where: {
+                    assignedTo: userId,
+                    stage: 'Converted',
+                    updatedAt: { gte: startOfMonth }
+                }
+            }),
+            prisma.leadFollowup.findMany({
+                where: {
+                    counselorId: userId,
+                    scheduledTime: { gte: startOfDay, lte: endOfDay },
+                    status: { notIn: ['Cancelled', 'Completed'] }
+                },
+                include: { lead: { select: { id: true, name: true } } },
+                orderBy: { scheduledTime: 'asc' }
+            }),
+            prisma.leadFollowup.findMany({
+                where: {
+                    counselorId: userId,
+                    scheduledTime: { lt: now },
+                    status: { notIn: ['Cancelled', 'Completed'] }
+                },
+                include: { lead: { select: { id: true, name: true } } },
+                orderBy: { scheduledTime: 'asc' }
             })
         ]);
 
         res.json({
             success: true,
-            data: { assignedLeads, hotLeads, followUps }
+            data: { 
+                assignedLeads, 
+                hotLeads, 
+                actionPendings,
+                convertedThisMonth,
+                todaysFollowups: todaysFollowups.map(f => ({ ...f, isOverdue: new Date(f.scheduledTime) < now })),
+                overdueFollowups: overdueFollowupsList.map(f => ({ ...f, isOverdue: true }))
+            }
         });
     } catch (error) {
         next(error);
@@ -277,7 +355,7 @@ exports.logCall = async (req, res, next) => {
 exports.getLeadStory = async (req, res, next) => {
     try {
         const leadId = parseInt(req.params.id);
-        const [activities, notes, calls] = await Promise.all([
+        const [activities, notes, calls, assignmentHistory, followups] = await Promise.all([
             prisma.activity.findMany({
                 where: { leadId },
                 include: { user: { select: { name: true } } },
@@ -292,19 +370,45 @@ exports.getLeadStory = async (req, res, next) => {
                 where: { leadId },
                 include: { counselor: { select: { name: true } } },
                 orderBy: { date: 'desc' }
+            }),
+            prisma.leadAssignmentHistory.findMany({
+                where: { leadId },
+                include: {
+                    assignedBy: { select: { name: true } },
+                    assignedTo: { select: { name: true } },
+                    previousOwner: { select: { name: true } }
+                },
+                orderBy: { assignedAt: 'desc' }
+            }),
+            prisma.leadFollowup.findMany({
+                where: { leadId },
+                include: { counselor: { select: { name: true } } },
+                orderBy: { scheduledTime: 'desc' }
             })
         ]);
 
         // Merge and sort all activities into a single chronological story
         const story = [
-            ...activities.map(a => ({
-                id: `act-${a.id}`,
-                type: 'Activity',
-                action: a.action,
-                details: a.details,
-                timestamp: a.timestamp,
-                user: a.user?.name || 'System'
-            })),
+            ...activities.map(a => {
+                if (a.action === 'ACADEMIC_PROFILE_UPDATED') {
+                    return {
+                        id: `act-${a.id}`,
+                        type: 'AcademicProfile',
+                        action: 'Academic Profile Updated',
+                        details: a.details,
+                        timestamp: a.timestamp,
+                        user: a.user?.name || 'System'
+                    };
+                }
+                return {
+                    id: `act-${a.id}`,
+                    type: 'Activity',
+                    action: a.action,
+                    details: a.details,
+                    timestamp: a.timestamp,
+                    user: a.user?.name || 'System'
+                };
+            }),
             ...notes.map(n => ({
                 id: `note-${n.id}`,
                 type: 'Note',
@@ -320,6 +424,22 @@ exports.getLeadStory = async (req, res, next) => {
                 details: `${c.outcome}: ${c.notes || 'No notes'}`,
                 timestamp: new Date(c.date),
                 user: c.counselor?.name
+            })),
+            ...assignmentHistory.map(h => ({
+                id: `assign-${h.id}`,
+                type: 'Assignment',
+                action: 'Custodian Changed',
+                details: `Assigned to ${h.assignedTo?.name || 'Unknown'} by ${h.assignedBy?.name || 'System'}` + (h.previousOwner ? ` (Previous Owner: ${h.previousOwner.name})` : ''),
+                timestamp: h.assignedAt,
+                user: h.assignedBy?.name || 'System'
+            })),
+            ...followups.map(f => ({
+                id: `follow-${f.id}`,
+                type: 'Followup',
+                action: 'Follow-up Scheduled',
+                details: `Scheduled for ${new Date(f.scheduledTime).toLocaleDateString()} — Status: ${f.status}`,
+                timestamp: f.createdAt,
+                user: f.counselor?.name
             }))
         ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 

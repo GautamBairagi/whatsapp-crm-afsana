@@ -1,227 +1,85 @@
-const prisma = require('../../config/prisma');
 const bcrypt = require('bcryptjs');
-const { generateAccessToken, generateRefreshToken } = require('../../utils/generateToken');
 const jwt = require('jsonwebtoken');
+const db = require('../../config/db');
 
-// @desc    Register user
-// @route   POST /api/auth/register
 exports.register = async (req, res, next) => {
     try {
-        let { name, email, password, role, country, team, client, assignedChannels } = req.body;
+        const { name, email, password, role } = req.body;
+        if (!name || !email || !password || !role) {
+            return res.status(400).json({ success: false, message: 'All fields are required' });
+        }
 
-        // Provide a default password if none is provided from the frontend
-        if (!password) {
-            password = 'password123';
+        const [existing] = await db.execute('SELECT id FROM users WHERE email = ?', [email]);
+        if (existing.length > 0) {
+            return res.status(400).json({ success: false, message: 'Email already exists' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        console.log(`[Auth] Registering user: ${email}, role: ${role}`);
+        const [result] = await db.execute(
+            'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)',
+            [name, email, hashedPassword, role]
+        );
 
-        // Map frontend role labels to DB role names
-        const roleMap = {
-            'Admin': 'ADMIN',
-            'Manager': 'MANAGER',
-            'Team Leader': 'TEAM_LEADER',
-            'Counselor': 'COUNSELOR',
-            'Customer Support': 'SUPPORT',
-            'Support': 'SUPPORT',
-            'MANAGER': 'MANAGER',
-            'TEAM_LEADER': 'TEAM_LEADER',
-            'COUNSELOR': 'COUNSELOR',
-            'SUPPORT': 'SUPPORT'
-        };
-        const dbRoleName = roleMap[role] || (role ? role.toUpperCase().replace(' ', '_') : 'COUNSELOR');
-
-        const roleEntity = await prisma.role.findUnique({
-            where: { name: dbRoleName }
-        });
-
-        if (!roleEntity) {
-            console.error(`[Auth] Registration failed: Role ${dbRoleName} not found`);
-            return res.status(400).json({ success: false, message: `System Error: Role ${dbRoleName} not found. Please run database seed.` });
-        }
-
-        const user = await prisma.user.create({
-            data: {
-                name,
-                email,
-                password: hashedPassword,
-                roleId: roleEntity.id,
-                country: country || 'India',
-                team: team || 'General',
-                client: client || 'Global Entity',
-                assignedChannels: parseInt(assignedChannels) || 0
-            },
-            include: { role: true }
-        });
-
-        res.status(201).json({
-            success: true,
-            message: 'User registered successfully',
-            data: {
-                token: generateAccessToken(user.id)
-            }
-        });
+        res.status(201).json({ success: true, data: { id: result.insertId, name, email, role } });
     } catch (error) {
-        if (error.code === 'P2002') {
-            return res.status(400).json({ success: false, message: 'User already exists' });
-        }
         next(error);
     }
 };
 
-// @desc    Login user
-// @route   POST /api/auth/login
 exports.login = async (req, res, next) => {
     try {
         const { email, password } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ success: false, message: 'Email and password are required' });
+        }
 
-        const user = await prisma.user.findUnique({
-            where: { email },
-            include: { role: true }
-        });
+        const [users] = await db.execute('SELECT * FROM users WHERE email = ?', [email]);
+        if (users.length === 0) {
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
 
-        if (!user || !(await bcrypt.compare(password, user.password))) {
+        const user = users[0];
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
             return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
 
         if (user.status === 'Inactive') {
-            return res.status(403).json({ success: false, message: 'Account is deactivated' });
+            return res.status(403).json({ success: false, message: 'Account is inactive' });
         }
 
-        const accessToken = generateAccessToken(user.id);
-        const refreshToken = generateRefreshToken(user.id);
-
-        // Store refresh token in database (optional but recommended for revocation)
-        await prisma.user.update({
-            where: { id: user.id },
-            data: { refreshToken }
-        });
+        const token = jwt.sign(
+            { id: user.id, email: user.email, role: user.role },
+            process.env.JWT_SECRET || 'crm_super_secret_jwt_key_2026',
+            { expiresIn: process.env.JWT_EXPIRE || '24h' }
+        );
 
         res.json({
             success: true,
-            message: 'Login successful',
-            data: {
-                token: accessToken,
-                refreshToken,
-                user: {
-                    id: user.id,
-                    name: user.name,
-                    email: user.email,
-                    role: user.role?.name,
-                    roleId: user.roleId,
-                    status: user.status,
-                    country: user.country,
-                    team: user.team,
-                    client: user.client,
-                    assignedChannels: user.assignedChannels,
-                    permissions: user.permissions,
-                    createdAt: user.createdAt
-                }
-            }
+            token,
+            data: { id: user.id, name: user.name, email: user.email, role: user.role }
         });
     } catch (error) {
         next(error);
     }
 };
 
-// @desc    Get current logged in user
-// @route   GET /api/auth/me
 exports.getMe = async (req, res, next) => {
     try {
-        const user = await prisma.user.findUnique({
-            where: { id: req.user.id },
-            include: { role: true }
-        });
-
-        if (user) {
-            delete user.password;
-            delete user.refreshToken;
-        }
-
-        if (!user) {
+        const [users] = await db.execute('SELECT id, name, email, role, status FROM users WHERE id = ?', [req.user.id]);
+        if (users.length === 0) {
             return res.status(404).json({ success: false, message: 'User not found' });
         }
-
-        if (user.role) {
-            user.role = user.role.name;
-        }
-
-        res.json({
-            success: true,
-            message: 'User profile fetched successfully',
-            data: user
-        });
+        res.json({ success: true, data: users[0] });
     } catch (error) {
         next(error);
     }
 };
-// @desc    Refresh access token
-// @route   POST /api/auth/refresh
+
 exports.refresh = async (req, res, next) => {
-    try {
-        const { refreshToken } = req.body;
-
-        if (!refreshToken) {
-            return res.status(401).json({ success: false, message: 'Refresh token required' });
-        }
-
-        // Verify refresh token
-        let decoded;
-        try {
-            decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'crm_refresh_secret_2026');
-        } catch (err) {
-            return res.status(401).json({ success: false, message: 'Invalid refresh token' });
-        }
-
-        // Find user and check if token matches
-        const user = await prisma.user.findUnique({
-            where: { id: decoded.id }
-        });
-
-        if (!user || user.refreshToken !== refreshToken) {
-            return res.status(401).json({ success: false, message: 'Invalid refresh token session' });
-        }
-
-        // Generate new access token
-        const accessToken = generateAccessToken(user.id);
-
-        res.json({
-            success: true,
-            message: 'Token refreshed successfully',
-            data: {
-                token: accessToken
-            }
-        });
-    } catch (error) {
-        next(error);
-    }
+    res.status(400).json({ success: false, message: 'Not implemented' });
 };
 
-// @desc    Reset password (Mock sending email or reset)
-// @route   POST /api/auth/reset-password
 exports.resetPassword = async (req, res, next) => {
-    try {
-        const { email } = req.body;
-
-        if (!email) {
-            return res.status(400).json({ success: false, message: 'Email is required' });
-        }
-
-        const user = await prisma.user.findUnique({
-            where: { email }
-        });
-
-        if (!user) {
-            return res.status(404).json({ success: false, message: 'User not found' });
-        }
-
-        // Simulating sending a password reset link
-        res.json({
-            success: true,
-            message: 'Password reset link sent to your email.'
-        });
-    } catch (error) {
-        next(error);
-    }
+    res.status(400).json({ success: false, message: 'Not implemented' });
 };

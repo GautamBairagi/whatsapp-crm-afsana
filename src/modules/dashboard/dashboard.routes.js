@@ -1,38 +1,19 @@
 const express = require('express');
 const router = express.Router();
-const {
-    getDashboardStats,
-    updateAiConfig,
-    getAiConfig,
-    getKpiStats,
-    getSuperAdminDashboard,
-    getAdminDashboard,
-    getManagerDashboard,
-    getTeamLeaderDashboard,
-    getCounselorDashboard,
-    getSupportDashboard,
-    updateSuperAdminDashboard,
-    createSnapshot
-} = require('./dashboard.controller');
-const { verifyToken, roleGuard, scopeLeads } = require('../../middleware/auth.middleware');
+const { getDashboardStats } = require('./dashboard.controller');
+const { verifyToken, roleGuard } = require('../../middleware/auth.middleware');
 
 router.use(verifyToken);
-router.use(scopeLeads);
 
-router.get('/kpi', verifyToken, getKpiStats);
-router.get('/stats', verifyToken, getDashboardStats);
+router.get('/kpi', getDashboardStats);
+router.get('/stats', getDashboardStats);
 
 // Role-Based Specific Dashboards
-router.get('/superadmin', verifyToken, roleGuard('SUPER_ADMIN'), getSuperAdminDashboard);
-router.post('/superadmin/update', verifyToken, roleGuard('SUPER_ADMIN'), updateSuperAdminDashboard);
-router.post('/superadmin/snapshot', verifyToken, roleGuard('SUPER_ADMIN'), createSnapshot);
-router.get('/admin', verifyToken, roleGuard('ADMIN', 'SUPER_ADMIN'), getAdminDashboard);
-router.get('/manager', verifyToken, roleGuard('MANAGER', 'SUPER_ADMIN'), getManagerDashboard);
-router.get('/teamleader', verifyToken, roleGuard('TEAM_LEADER', 'SUPER_ADMIN'), getTeamLeaderDashboard);
-router.get('/counselor', verifyToken, roleGuard('COUNSELOR', 'SUPER_ADMIN'), getCounselorDashboard);
-router.get('/support', verifyToken, roleGuard('SUPPORT', 'SUPER_ADMIN'), getSupportDashboard);
-
-router.get('/ai-config', verifyToken, getAiConfig);
-router.post('/ai-config', verifyToken, updateAiConfig);
+router.get('/superadmin', roleGuard('SUPER_ADMIN'), getDashboardStats);
+router.get('/admin', roleGuard('ADMIN', 'SUPER_ADMIN'), getDashboardStats);
+router.get('/manager', roleGuard('MANAGER', 'SUPER_ADMIN'), getDashboardStats);
+router.get('/teamleader', roleGuard('TEAM_LEADER', 'SUPER_ADMIN'), getDashboardStats);
+router.get('/counselor', roleGuard('COUNSELOR', 'SUPER_ADMIN'), getDashboardStats);
+router.get('/support', roleGuard('SUPPORT', 'SUPER_ADMIN'), getDashboardStats);
 
 module.exports = router;

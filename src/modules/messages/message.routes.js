@@ -1,14 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const { getChats, getMessages, sendMessage, clearUnread } = require('./message.controller');
-const { verifyToken, scopeLeads } = require('../../middleware/auth.middleware');
+const { getConversations, getMessages, sendMessage, markAsRead, addNote } = require('./message.controller');
+const { verifyToken } = require('../../middleware/auth.middleware');
 
 router.use(verifyToken);
-router.use(scopeLeads);
 
-router.get('/', getChats);
-router.get('/:leadId', getMessages);
+router.get('/conversations', getConversations);
+router.get('/', getMessages);
 router.post('/', sendMessage);
-router.put('/clear/:chatId', clearUnread);
+router.post('/note', addNote);
+router.put('/:conversationId/read', markAsRead);
 
 module.exports = router;

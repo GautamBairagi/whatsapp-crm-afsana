@@ -1,11 +1,15 @@
 const express = require('express');
 const router = express.Router();
-const { sendMessage, getLogs } = require('./whatsapp.controller');
+const { sendMessage, getLogs, verifyWebhook, handleWebhook } = require('./whatsapp.controller');
 const { verifyToken } = require('../../middleware/auth.middleware');
+const { logActivity } = require('../../middleware/activity.middleware');
 
-router.use(verifyToken);
+// Public Webhook endpoints for Meta
+router.get('/webhook', verifyWebhook);
+router.post('/webhook', handleWebhook);
 
-router.post('/send', sendMessage);
-router.get('/logs', getLogs);
+// Protected endpoints
+router.post('/send', verifyToken, logActivity('Sent WhatsApp Message'), sendMessage);
+router.get('/logs', verifyToken, getLogs);
 
 module.exports = router;
